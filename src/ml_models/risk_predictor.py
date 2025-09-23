@@ -47,6 +47,20 @@ class RiskPredictor:
         # Separate features and targets
         feature_cols = [col for col in self.ml_data.columns if not col.startswith('target_') and col != 'Risk_ID']
         
+        # Prepare features - encode categorical variables
+        X_raw = self.ml_data[feature_cols].copy()
+        
+        # Identify categorical columns that need encoding
+        categorical_cols = X_raw.select_dtypes(include=['object']).columns
+        
+        # Apply label encoding to categorical columns
+        for col in categorical_cols:
+            le = LabelEncoder()
+            X_raw[col] = le.fit_transform(X_raw[col].astype(str))
+        
+        # Fill any remaining NaN values
+        X_raw = X_raw.fillna(0)
+        
         datasets = {}
         
         # Binary classification datasets
@@ -54,11 +68,10 @@ class RiskPredictor:
         for target in binary_targets:
             target_col = f'target_{target}'
             if target_col in self.ml_data.columns:
-                X = self.ml_data[feature_cols]
                 y = self.ml_data[target_col]
                 
                 X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.2, random_state=42, stratify=y
+                    X_raw, y, test_size=0.2, random_state=42, stratify=y
                 )
                 
                 datasets[target] = {
@@ -69,17 +82,21 @@ class RiskPredictor:
         
         # Multi-class classification
         if 'target_risk_level' in self.ml_data.columns:
-            X = self.ml_data[feature_cols]
             y = self.ml_data['target_risk_level']
             
+            # Encode target labels
+            le_target = LabelEncoder()
+            y_encoded = le_target.fit_transform(y)
+            
             X_train, X_test, y_train, y_test = train_test_split(
-                X, y, test_size=0.2, random_state=42, stratify=y
+                X_raw, y_encoded, test_size=0.2, random_state=42, stratify=y_encoded
             )
             
             datasets['risk_level'] = {
                 'X_train': X_train, 'X_test': X_test,
                 'y_train': y_train, 'y_test': y_test,
-                'task_type': 'classification'
+                'task_type': 'classification',
+                'label_encoder': le_target
             }
         
         # Regression datasets
@@ -87,11 +104,10 @@ class RiskPredictor:
         for target in regression_targets:
             target_col = f'target_{target}'
             if target_col in self.ml_data.columns:
-                X = self.ml_data[feature_cols]
                 y = self.ml_data[target_col]
                 
                 X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.2, random_state=42
+                    X_raw, y, test_size=0.2, random_state=42
                 )
                 
                 datasets[target] = {
@@ -330,13 +346,24 @@ class RiskPredictor:
     def make_predictions(self, risk_data: pd.DataFrame = None) -> Dict[str, Any]:
         """Make predictions on new risk data"""
         if risk_data is None:
-            risk_data = self.ml_data
+            # Use a subset of the training data for prediction
+            feature_cols = [col for col in self.ml_data.columns if not col.startswith('target_') and col != 'Risk_ID']
+            risk_data = self.ml_data[feature_cols + ['Risk_ID']].head(10)  # Use first 10 rows
         
         predictions = {}
         
         # Get feature columns (excluding targets and ID)
         feature_cols = [col for col in risk_data.columns if not col.startswith('target_') and col != 'Risk_ID']
-        X = risk_data[feature_cols]
+        X = risk_data[feature_cols].copy()
+        
+        # Encode categorical variables
+        categorical_cols = X.select_dtypes(include=['object']).columns
+        for col in categorical_cols:
+            le = LabelEncoder()
+            X[col] = le.fit_transform(X[col].astype(str))
+        
+        # Fill NaN values
+        X = X.fillna(0)
         
         for task_name, task_models in self.models.items():
             task_predictions = {}
@@ -354,13 +381,13 @@ class RiskPredictor:
             
             # Make predictions
             pred = best_model.predict(X_prepared)
-            task_predictions['predictions'] = pred
+            task_predictions['predictions'] = pred.tolist()  # Convert to list for JSON serialization
             task_predictions['model_used'] = best_model_name
             
             # Add prediction probabilities for classification
             if hasattr(best_model, 'predict_proba'):
                 proba = best_model.predict_proba(X_prepared)
-                task_predictions['probabilities'] = proba
+                task_predictions['probabilities'] = proba.tolist()  # Convert to list
             
             predictions[task_name] = task_predictions
         
